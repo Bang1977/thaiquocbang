@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trình Quét Số Liệu Tùy Chỉnh</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { -webkit-tap-highlight-color: transparent; }
+        #camera-container { position: relative; max-width: 100%; margin: auto; overflow: hidden; border-radius: 0.5rem; background: #333; }
+        #video { width: 100%; height: auto; display: block; }
+        #scan-region {
+            position: absolute;
+            border: 3px solid #10b981; /* green-500 */
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
+            /* Giá trị mặc định, sẽ được JavaScript cập nhật */
+            left: 10%; top: 40%; width: 80%; height: 20%;
+        }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 24px; height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .slider-label { display: block; font-size: 0.875rem; font-weight: 500; color: #4b5563; }
+        .slider-value { font-weight: 600; color: #1f2937; }
+    </style>
+</head>
+<body class="bg-gray-100 flex flex-col items-center justify-center min-h-screen p-4 font-sans">
+
+    <div class="w-full max-w-lg mx-auto bg-white rounded-2xl shadow-xl p-6 space-y-4">
+        <h1 class="text-2xl font-bold text-center text-gray-800">Quét và Thu Thập Số Liệu</h1>
+        
+        <div id="camera-container">
+            <video id="video" playsinline></video>
+            <div id="scan-region"></div>
+        </div>
+        <canvas id="canvas" class="hidden"></canvas>
+
+        <div id="controls" class="p-3 bg-gray-50 rounded-lg border space-y-2">
+            <h3 class="font-semibold text-center">Tùy chỉnh vùng quét</h3>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label for="posX" class="slider-label">Vị trí Ngang: <span id="posX-val" class="slider-value">10%</span></label>
+                    <input type="range" id="posX" min="0" max="100" value="10" class="w-full">
+                </div>
+                 <div>
+                    <label for="posY" class="slider-label">Vị trí Dọc: <span id="posY-val" class="slider-value">40%</span></label>
+                    <input type="range" id="posY" min="0" max="100" value="40" class="w-full">
+                </div>
+                <div>
+                    <label for="width" class="slider-label">Chiều Rộng: <span id="width-val" class="slider-value">80%</span></label>
+                    <input type="range" id="width" min="10" max="100" value="80" class="w-full">
+                </div>
+                <div>
+                    <label for="height" class="slider-label">Chiều Cao: <span id="height-val" class="slider-value">20%</span></label>
+                    <input type="range" id="height" min="5" max="100" value="20" class="w-full">
+                </div>
+            </div>
+        </div>
+        <div class="space-y-3">
+            <label for="result" class="block font-medium text-gray-700">Kết quả nhận dạng:</label>
+            <div class="flex items-center gap-2">
+                <input type="text" id="result" class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                <div id="loader" class="loader hidden"></div>
+            </div>
+            <p id="status" class="text-sm text-gray-500 h-5"></p>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+            <button id="capture-btn" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 active:scale-95 transition">Lấy kết quả</M>
+            <button id="export-btn" class="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 active:scale-95 transition">Kết thúc & Xuất Excel</button>
+        </div>
+
+        <div>
+            <h3 class="font-semibold text-lg">Danh sách đã lấy (<span id="count">0</span>):</h3>
+            <div id="results-list" class="mt-2 bg-gray-50 border rounded-lg p-3 max-h-40 overflow-y-auto space-y-1 text-gray-700"></div>
+        </div>
+    </div>
+
+    <script>
+        // Đợi DOM tải xong mới chạy script
+        document.addEventListener('DOMContentLoaded', () => {
+            // Các biến DOM elements
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('canvas');
+            const resultInput = document.getElementById('result');
+            const captureBtn = document.getElementById('capture-btn');
+            const exportBtn = document.getElementById('export-btn');
+            const resultsList = document.getElementById('results-list');
+            const countSpan = document.getElementById('count');
+            const statusEl = document.getElementById('status');
+            const loader = document.getElementById('loader');
+            const scanRegion = document.getElementById('scan-region');
+
+            // Các biến cho việc điều khiển vùng quét
+            const posXSlider = document.getElementById('posX');
+            const posYSlider = document.getElementById('posY');
+            const widthSlider = document.getElementById('width');
+            const heightSlider = document.getElementById('height');
+            const posXVal = document.getElementById('posX-val');
+            const posYVal = document.getElementById('posY-val');
+            const widthVal = document.getElementById('width-val');
+            const heightVal = document.getElementById('height-val');
+
+            const API_URL = 'http://127.0.0.1:5000'; // Đảm bảo địa chỉ này đúng!
+            let capturedNumbers = [];
+            let recognitionInterval;
+
+            // --- Start: Phần JavaScript mới để cập nhật vùng quét ---
+            function updateScanRegion() {
+                const posX = posXSlider.value;
+                const posY = posYSlider.value;
+                const width = widthSlider.value;
+                const height = heightSlider.value;
+
+                // Đảm bảo vùng quét không đi ra ngoài
+                const finalWidth = Math.min(width, 100 - posX);
+                const finalHeight = Math.min(height, 100 - posY);
+
+                scanRegion.style.left = `${posX}%`;
+                scanRegion.style.top = `${posY}%`;
+                scanRegion.style.width = `${finalWidth}%`;
+                scanRegion.style.height = `${finalHeight}%`;
+
+                // Cập nhật giá trị hiển thị
+                posXVal.textContent = `${posX}%`;
+                posYVal.textContent = `${posY}%`;
+                widthVal.textContent = `${finalWidth}%`;
+                heightVal.textContent = `${finalHeight}%`;
+            }
+
+            [posXSlider, posYSlider, widthSlider, heightSlider].forEach(slider => {
+                slider.addEventListener('input', updateScanRegion);
+            });
+            // --- End: Phần JavaScript mới ---
+
+            // --- Start: Hàm startCamera được cải tiến ---
+            async function startCamera() {
+                try {
+                    // Cấu hình camera: ưu tiên camera sau ('environment')
+                    const constraints = {
+                        video: {
+                            facingMode: { ideal: 'environment' },
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 }
+                        },
+                        audio: false
+                    };
+                    
+                    let stream;
+                    try {
+                        stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    } catch (e) {
+                        console.warn("Không tìm thấy camera sau, thử camera mặc định:", e);
+                        // Nếu lỗi (vd: không có camera sau trên laptop), thử lại với camera bất kỳ
+                        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                    }
+
+                    video.srcObject = stream;
+                    await video.play();
+                    updateScanRegion(); // Cập nhật vùng quét lần đầu
+                    
+                    // Xóa interval cũ nếu có
+                    if (recognitionInterval) {
+                        clearInterval(recognitionInterval);
+                    }
+                    recognitionInterval = setInterval(recognizeFromVideo, 1000);
+                    
+                } catch (err) {
+                    console.error("Lỗi bật camera: ", err);
+                    statusEl.textContent = "Lỗi Camera. Hãy kiểm tra quyền truy cập.";
+                    // Thêm thông báo nếu chạy qua file://
+                    if (window.location.protocol === 'file:') {
+                        statusEl.textContent = "Lỗi: Bạn cần chạy file này qua server (http://localhost).";
+                        alert("Lỗi bảo mật: Không thể truy cập camera từ 'file://'.\nVui lòng chạy file này qua một máy chủ (ví dụ: dùng 'Live Server' trong VS Code hoặc 'python -m http.server').");
+                    }
+                }
+            }
+            // --- End: Hàm startCamera được cải tiến ---
+            
+            async function recognizeFromVideo() {
+                if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+                loader.classList.remove('hidden');
+
+                const videoRect = video.getBoundingClientRect();
+                const regionRect = scanRegion.getBoundingClientRect();
+                
+                const scaleX = video.videoWidth / videoRect.width;
+                const scaleY = video.videoHeight / videoRect.height;
+                
+                const sx = (regionRect.left - videoRect.left) * scaleX;
+                const sy = (regionRect.top - videoRect.top) * scaleY;
+                const sWidth = regionRect.width * scaleX;
+                const sHeight = regionRect.height * scaleY;
+
+                // Kiểm tra nếu kích thước = 0 thì không làm gì cả
+                if (sWidth <= 0 || sHeight <= 0) {
+                     loader.classList.add('hidden');
+                    return;
+                }
+
+                canvas.width = sWidth;
+                canvas.height = sHeight;
+                const context = canvas.getContext('2d');
+                context.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
+                
+                const base64Image = canvas.toDataURL('image/png').split(',')[1];
+                
+                try {
+                    const response = await fetch(`${API_URL}/recognize`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ image: base64Image })
+                    });
+                    if (!response.ok) throw new Error('Lỗi từ server');
+                    
+                    const data = await response.json();
+                    resultInput.value = data.text || '';
+                } catch (error) {
+                    console.error('Lỗi nhận dạng:', error);
+                    if (!statusEl.textContent.includes('Excel')) {
+                        statusEl.textContent = 'Lỗi kết nối server.';
+                    }
+                } finally {
+                    loader.classList.add('hidden');
+                }
+            }
+
+            captureBtn.addEventListener('click', () => {
+                const number = resultInput.value.trim();
+                if (number) {
+                    capturedNumbers.push(number);
+                    updateResultsList();
+                    resultInput.value = '';
+                    statusEl.textContent = `Đã lấy số: ${number}`;
+                }
+            });
+
+            exportBtn.addEventListener('click', async () => {
+                if (capturedNumbers.length === 0) {
+                    alert('Chưa có số liệu nào để xuất!');
+                    return;
+                }
+                clearInterval(recognitionInterval); // Dừng nhận dạng
+                statusEl.textContent = 'Đang chuẩn bị file Excel...';
+                
+                try {
+                    const response = await fetch(`${API_URL}/export`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ numbers: capturedNumbers })
+                    });
+
+                    if (!response.ok) throw new Error('Không thể tạo file Excel.');
+
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.style.display = 'none';
+                    a.href = url;
+                    a.download = 'ket_qua_so.xlsx';
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    
+                    statusEl.textContent = 'Đã xuất file Excel thành công!';
+                    capturedNumbers = [];
+                    updateResultsList();
+                    startCamera(); // Khởi động lại camera
+                } catch (error) {
+                    console.error('Lỗi xuất file:', error);
+                    statusEl.textContent = 'Xuất file thất bại.';
+                    startCamera(); // Khởi động lại camera ngay cả khi lỗi
+                }
+            });
+
+            function updateResultsList() {
+                resultsList.innerHTML = '';
+                capturedNumbers.forEach((num, index) => {
+                    const div = document.createElement('div');
+                    div.textContent = `${index + 1}. ${num}`;
+                    resultsList.appendChild(div);
+                });
+                countSpan.textContent = capturedNumbers.length;
+            }
+
+            // Khởi động camera khi DOM đã sẵn sàng
+            startCamera();
+        });
+    </script>
+</body>
+</html>
